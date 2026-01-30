@@ -1,0 +1,21 @@
+spec_version: v1
+kind: external
+name: simple_calculator_agent
+title: Simple Calculator & Greeting Agent
+nickname: simple_calculator
+provider: external_chat
+description: |
+  A LangGraph-powered agent that provides:
+  - Personalized greetings by name
+  - Basic arithmetic operations (add, subtract, multiply, divide)
+
+  Use this agent when users need quick calculations or friendly interaction.
+tags:
+  - calculator
+  - math
+  - greeting
+  - demo
+api_url: "http://localhost:8080/chat/completions" # Update to ngrok URL or deployed URL
+auth_scheme: NONE # we are authing within the container
+chat_params:
+  stream: false # turned off streaming for now
