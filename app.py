@@ -67,12 +67,18 @@ async def chat_completions(request: ChatCompletionRequest):
             detail="OPENAI_API_KEY environment variable not set",
         )
 
-    # Check if streaming is requested
+    # Handle streaming requests by returning non-streaming response
+    # watsonx Orchestrate may request streaming, but we'll return complete response
     if request.stream:
-        raise HTTPException(
-            status_code=501,
-            detail="Streaming is not yet implemented. Please set stream=false.",
-        )
+        logger.info("Streaming requested but not supported, returning complete response")
+        # Continue with non-streaming response
+
+    # # Check if streaming is requested
+    # if request.stream:
+    #     raise HTTPException(
+    #         status_code=501,
+    #         detail="Streaming is not yet implemented. Please set stream=false.",
+    #     )
 
     try:
         # Convert messages to dict format for agent
