@@ -3,6 +3,8 @@ FastAPI application for Simple LangGraph Agent.
 Implements Watsonx Orchestrate external agent API.
 """
 
+import asyncio
+import json
 import logging
 import os
 import time
@@ -11,7 +13,7 @@ import uuid
 from agent import run_agent
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from models import (
     ChatCompletionRequest,
     ChatCompletionResponse,
@@ -49,14 +51,11 @@ async def health():
     """Health check endpoint."""
     return {"status": "healthy"}
 
-
 @app.post("/chat/completions")
 async def chat_completions(request: ChatCompletionRequest):
     """
     Chat completions endpoint compatible with Watsonx Orchestrate.
-
-    This endpoint receives messages in Watsonx Orchestrate format,
-    runs them through the LangGraph agent, and returns a response.
+    Supports both streaming and non-streaming responses.
     """
     logger.info(f"Received chat completion request: {request.model_dump_json()}")
 
@@ -67,44 +66,96 @@ async def chat_completions(request: ChatCompletionRequest):
             detail="OPENAI_API_KEY environment variable not set",
         )
 
-    # Handle streaming requests by returning non-streaming response
-    # watsonx Orchestrate may request streaming, but we'll return complete response
-    if request.stream:
-        logger.info("Streaming requested but not supported, returning complete response")
-        # Continue with non-streaming response
-
-    # # Check if streaming is requested
-    # if request.stream:
-    #     raise HTTPException(
-    #         status_code=501,
-    #         detail="Streaming is not yet implemented. Please set stream=false.",
-    #     )
-
     try:
         # Convert messages to dict format for agent
         messages = [msg.model_dump() for msg in request.messages]
 
-        # Run the agent
-        logger.info(f"Running agent with {len(messages)} messages")
-        response_content = run_agent(messages)
-        logger.info(f"Agent response: {response_content}")
+        if request.stream:
+            # Streaming response
+            logger.info(f"Running agent with {len(messages)} messages (streaming)")
+            
+            async def generate():
+                try:
+                    # Run agent and get response
+                    response_content = run_agent(messages)
+                    logger.info(f"Agent response (streaming): {response_content}")
+                    
+                    # Send response as streaming chunks
+                    # Split into words for streaming effect
+                    words = response_content.split()
+                    
+                    for i, word in enumerate(words):
+                        chunk = {
+                            "id": str(uuid.uuid4()),
+                            "object": "chat.completion.chunk",
+                            "created": int(time.time()),
+                            "model": request.model or "gpt-4o-mini",
+                            "choices": [{
+                                "index": 0,
+                                "delta": {
+                                    "content": word + (" " if i < len(words) - 1 else "")
+                                },
+                                "finish_reason": None
+                            }]
+                        }
+                        yield f"data: {json.dumps(chunk)}\n\n"
+                        await asyncio.sleep(0.01)  # Small delay for streaming effect
+                    
+                    # Send final chunk with finish_reason
+                    final_chunk = {
+                        "id": str(uuid.uuid4()),
+                        "object": "chat.completion.chunk",
+                        "created": int(time.time()),
+                        "model": request.model or "gpt-4o-mini",
+                        "choices": [{
+                            "index": 0,
+                            "delta": {},
+                            "finish_reason": "stop"
+                        }]
+                    }
+                    yield f"data: {json.dumps(final_chunk)}\n\n"
+                    yield "data: [DONE]\n\n"
+                    
+                except Exception as e:
+                    logger.error(f"Error in streaming: {str(e)}", exc_info=True)
+                    error_chunk = {
+                        "error": {
+                            "message": str(e),
+                            "type": "internal_error"
+                        }
+                    }
+                    yield f"data: {json.dumps(error_chunk)}\n\n"
+            
+            return StreamingResponse(
+                generate(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no"
+                }
+            )
+        else:
+            # Non-streaming response (original code)
+            logger.info(f"Running agent with {len(messages)} messages")
+            response_content = run_agent(messages)
+            logger.info(f"Agent response: {response_content}")
 
-        # Build response
-        response = ChatCompletionResponse(
-            id=str(uuid.uuid4()),
-            object="chat.completion",
-            created=int(time.time()),
-            model=request.model or "gpt-4o-mini",
-            choices=[
-                Choice(
-                    index=0,
-                    message=MessageResponse(role="assistant", content=response_content),
-                    finish_reason="stop",
-                )
-            ],
-        )
+            response = ChatCompletionResponse(
+                id=str(uuid.uuid4()),
+                object="chat.completion",
+                created=int(time.time()),
+                model=request.model or "gpt-4o-mini",
+                choices=[
+                    Choice(
+                        index=0,
+                        message=MessageResponse(role="assistant", content=response_content),
+                        finish_reason="stop",
+                    )
+                ],
+            )
 
-        return JSONResponse(content=response.model_dump())
+            return JSONResponse(content=response.model_dump())
 
     except Exception as e:
         logger.error(f"Error processing request: {str(e)}", exc_info=True)
@@ -112,7 +163,6 @@ async def chat_completions(request: ChatCompletionRequest):
             status_code=500,
             detail=f"Error processing request: {str(e)}",
         )
-
 
 if __name__ == "__main__":
     import uvicorn
